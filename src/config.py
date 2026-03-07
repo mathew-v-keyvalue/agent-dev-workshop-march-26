@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = Field(...)
     OPENAI_LLM_MODEL: str = Field(default="gpt-4o-mini")
+    OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
 
     LITELLM_URL: str | None = Field(default=None)
 
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     MYSQL_USER: str = Field(default="diya")
     MYSQL_PASSWORD: str = Field(default="password")
     MYSQL_DATABASE: str = Field(default="kvkart")
+
+    WEAVIATE_URL: str = Field(default="http://localhost:8090")
+    WEAVIATE_GRPC_PORT: int = Field(default=50051)
 
     LANGSMITH_TRACING: str = Field(default="false")
     LANGSMITH_ENDPOINT: str = Field(default="https://api.smith.langchain.com")

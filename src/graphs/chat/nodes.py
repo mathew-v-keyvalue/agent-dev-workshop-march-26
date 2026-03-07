@@ -5,12 +5,12 @@ from langchain.agents import create_agent
 from src.graphs.chat.prompts import SYSTEM_PROMPT
 from src.graphs.chat.states import AgentState
 from src.llm.openai import OpenAILLM
-from src.tools import all_tools
+from src.tools import get_all_tools
 
 _openai = OpenAILLM()
 _react_agent = create_agent(
     _openai.model,
-    tools=all_tools,
+    tools=get_all_tools(),
     system_prompt=SYSTEM_PROMPT,
 )
 
