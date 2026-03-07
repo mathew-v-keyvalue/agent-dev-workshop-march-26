@@ -96,15 +96,11 @@ from src.tools.notifications import (
     mark_notification_read,
 )
 
-all_tools = [
+order_management_tools = [
     # Orders
     get_order_by_order_number, get_order_by_id, get_orders_by_user,
     get_order_items, get_order_details_full, get_bulk_orders_by_ids,
     cancel_order, update_order_status,
-    # Products
-    get_product_by_id, search_products, get_products_by_category,
-    get_products_by_brand, get_product_reviews, get_all_categories,
-    get_all_brands, get_bulk_products_by_ids, check_product_availability,
     # Logistics
     get_shipment_by_order, get_tracking_events, get_full_tracking_by_order,
     get_delivery_estimate, get_logistics_partners, get_bulk_shipments_by_orders,
@@ -117,9 +113,6 @@ all_tools = [
     create_return_request, update_return_status,
     # Users
     get_user_profile, get_user_by_email, get_user_addresses,
-    # Cart & Wishlist
-    get_cart_items, get_wishlist, add_to_cart, update_cart_quantity,
-    remove_from_cart, add_to_wishlist, remove_from_wishlist,
     # Support
     get_tickets_by_user, get_ticket_details, create_support_ticket,
     update_ticket_status,
@@ -130,5 +123,17 @@ all_tools = [
     # Notifications
     get_user_notifications, mark_notification_read,
 ]
+
+product_discovery_tools = [
+    # Products
+    get_product_by_id, search_products, get_products_by_category,
+    get_products_by_brand, get_product_reviews, get_all_categories,
+    get_all_brands, get_bulk_products_by_ids, check_product_availability,
+    # Cart & Wishlist
+    get_cart_items, get_wishlist, add_to_cart, update_cart_quantity,
+    remove_from_cart, add_to_wishlist, remove_from_wishlist,
+]
+
+all_tools = list({t: None for t in order_management_tools + product_discovery_tools})
 
 from src.tools.rag import create_rag_tools
