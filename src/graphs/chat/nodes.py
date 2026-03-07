@@ -3,14 +3,17 @@ import logging
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import BaseModel, Field
 
 from src.config import settings
 from src.embedding.openai import OpenAIEmbedding
 from src.graphs.chat.prompts import (
+    AGENT_GUARDRAILS_PROMPT,
     GUARDRAILS_GENERAL_PROMPT,
     INTENT_CLASSIFIER_PROMPT,
     ORDER_MANAGEMENT_SYSTEM_PROMPT,
     PRODUCT_DISCOVERY_SYSTEM_PROMPT,
+    USER_GUARDRAILS_PROMPT,
 )
 from src.graphs.chat.states import AgentState, Intent
 from src.llm.openai import OpenAILLM
@@ -23,6 +26,15 @@ from src.vector_db.weaviate import WeaviateVectorDB
 logger = logging.getLogger(__name__)
 
 _llm = OpenAILLM()
+
+
+class GuardrailResult(BaseModel):
+    content: str = Field(description="The response content or refusal message")
+    flag: bool = Field(description="True if blocked/unsafe, False if allowed/safe")
+
+
+_user_guardrail_llm = _llm.model.with_structured_output(GuardrailResult)
+_agent_guardrail_llm = _llm.model.with_structured_output(GuardrailResult)
 
 
 def _build_order_management_tools():
@@ -108,3 +120,65 @@ def general_assistant_agent(state: AgentState) -> dict:
     )
     logger.info("general_assistant_agent responded")
     return {"messages": [response]}
+
+
+def user_guardrails_agent(state: AgentState) -> dict:
+    last_human = None
+    for m in reversed(state.messages):
+        if isinstance(m, HumanMessage):
+            last_human = m
+            break
+    if last_human is None:
+        return {"user_guardrail_flag": False}
+
+    context = [
+        m for m in state.messages
+        if isinstance(m, (SystemMessage, HumanMessage))
+        or (isinstance(m, AIMessage) and not m.tool_calls)
+    ][-10:]
+
+    result: GuardrailResult = _user_guardrail_llm.invoke(
+        [SystemMessage(content=USER_GUARDRAILS_PROMPT)] + context,
+    )
+    logger.info("user_guardrails_agent flag=%s", result.flag)
+
+    if result.flag:
+        return {
+            "user_guardrail_flag": True,
+            "messages": [AIMessage(content=result.content)],
+        }
+    return {"user_guardrail_flag": False}
+
+
+def agent_guardrails_agent(state: AgentState) -> dict:
+    candidate = None
+    for m in reversed(state.messages):
+        if isinstance(m, AIMessage) and m.content and not m.tool_calls:
+            candidate = m
+            break
+    if candidate is None:
+        return {"agent_response_safe": True}
+
+    context = [
+        m for m in state.messages
+        if isinstance(m, (SystemMessage, HumanMessage))
+        or (isinstance(m, AIMessage) and not m.tool_calls)
+    ][-10:]
+
+    result: GuardrailResult = _agent_guardrail_llm.invoke(
+        [SystemMessage(content=AGENT_GUARDRAILS_PROMPT)] + context,
+    )
+    logger.info("agent_guardrails_agent flag=%s", result.flag)
+
+    if result.flag:
+        return {
+            "agent_response_safe": False,
+            "messages": [AIMessage(content="I'm sorry, something went wrong. Please try again.")],
+        }
+
+    if result.content != candidate.content:
+        return {
+            "agent_response_safe": True,
+            "messages": [AIMessage(content=result.content)],
+        }
+    return {"agent_response_safe": True}
