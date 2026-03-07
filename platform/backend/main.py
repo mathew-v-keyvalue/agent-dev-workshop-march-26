@@ -384,6 +384,7 @@ def chat(request: ChatRequest):
                     if node == "intent_agent":
                         continue
                     if node not in (
+                        "assistant",
                         "order_management_agent",
                         "product_discovery_agent",
                         "general_assistant_agent",

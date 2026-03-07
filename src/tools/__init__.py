@@ -151,7 +151,23 @@ USER_TOOLS = [
     get_user_addresses,
 ]
 
+# Registry: all tools from every domain for the unified assistant
+all_tools = (
+    ORDER_TOOLS
+    + LOGISTICS_TOOLS
+    + PAYMENT_TOOLS
+    + PRODUCT_TOOLS
+    + CART_TOOLS
+    + COUPON_TOOLS
+    + WALLET_TOOLS
+    + RETURNS_TOOLS
+    + SUPPORT_TOOLS
+    + NOTIFICATION_TOOLS
+    + USER_TOOLS
+)
+
 __all__ = [
+    "all_tools",
     "ORDER_TOOLS",
     "LOGISTICS_TOOLS",
     "PAYMENT_TOOLS",
