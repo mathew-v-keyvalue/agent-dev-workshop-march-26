@@ -7,7 +7,6 @@ st.set_page_config(page_title="Chat Agent", page_icon="💬", layout="centered")
 st.title("💬 Chat Agent")
 
 
-@st.cache_resource
 def get_agent():
     return ChatAgent()
 

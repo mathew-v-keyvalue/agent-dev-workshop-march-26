@@ -18,3 +18,9 @@ class ChatAgent:
             HumanMessage(content=message),
         ]
         return self.graph.invoke(AgentState(messages=messages))
+    def stream(self, message, thread_id, user_id, history=None):
+        messages = [
+            SystemMessage(content=_USER_SYSTEM.format(user_id=user_id)),
+            HumanMessage(content=message),
+        ]
+        yield from self.graph.stream(AgentState(messages=messages), stream_mode=["messages", "updates"])
