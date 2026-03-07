@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: agent-mcp
-    command: ["/usr/local/bin/python", "-m", "src.mcp.server"]
+    command: ["python", "-m", "src.mcp.server"]
     environment:
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000

@@ -44,6 +44,8 @@ def send_order_update_whatsapp(order_number: str, message: str) -> dict:
 
 
 if __name__ == "__main__":
+    import asyncio
+
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8000"))
-    mcp.run(transport="sse", host=host, port=port)
+    asyncio.run(mcp.run_sse_async())
