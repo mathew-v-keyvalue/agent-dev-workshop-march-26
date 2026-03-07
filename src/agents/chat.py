@@ -14,4 +14,6 @@ class ChatAgent:
         result = self.graph.invoke(state)
         return {"messages": result["messages"]}
 
-    
+    def stream(self, message: str, thread_id: str, user_id: str, history=None):
+        state = AgentState(messages=list(history or []) + [HumanMessage(content=message)])
+        yield from self.graph.stream(state, stream_mode=["messages", "updates"])
