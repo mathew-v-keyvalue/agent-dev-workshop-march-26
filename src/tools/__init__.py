@@ -134,6 +134,6 @@ product_discovery_tools = [
     remove_from_cart, add_to_wishlist, remove_from_wishlist,
 ]
 
-all_tools = list({t: None for t in order_management_tools + product_discovery_tools})
+all_tools = order_management_tools + product_discovery_tools
 
 from src.tools.rag import create_rag_tools

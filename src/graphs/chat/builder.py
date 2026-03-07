@@ -1,3 +1,4 @@
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from src.graphs.chat.nodes import (
@@ -39,4 +40,4 @@ def build_graph():
     workflow.add_edge("product_discovery", END)
     workflow.add_edge("general_assistant", END)
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=MemorySaver())
