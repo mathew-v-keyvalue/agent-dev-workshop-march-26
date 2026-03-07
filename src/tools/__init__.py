@@ -151,8 +151,8 @@ USER_TOOLS = [
     get_user_addresses,
 ]
 
-# Registry: all tools from every domain for the unified assistant
-all_tools = (
+# Base list: all DB tools (orders, logistics, products, etc.)
+_all_db_tools = (
     ORDER_TOOLS
     + LOGISTICS_TOOLS
     + PAYMENT_TOOLS
@@ -166,8 +166,39 @@ all_tools = (
     + USER_TOOLS
 )
 
+# Legacy name for backward compatibility
+all_tools = _all_db_tools
+
+
+def get_all_tools():
+    """Build tool list dynamically: DB tools first, then RAG tools if Weaviate is available.
+
+    RAG tools (semantic_search, hybrid_search, get_document_by_id) are added when
+    WeaviateVectorDB can connect and has an embedding. If Weaviate is unavailable,
+    returns only DB tools (no exception raised).
+    """
+    tools = list(_all_db_tools)
+    try:
+        from src.config import settings
+        from src.embedding import OpenAIEmbedding
+        from src.vector_db import WeaviateVectorDB
+        from src.tools.rag import create_rag_tools
+
+        embedding = OpenAIEmbedding()
+        vector_db = WeaviateVectorDB(
+            url=settings.WEAVIATE_URL,
+            grpc_port=settings.WEAVIATE_GRPC_PORT,
+            embedding=embedding,
+        )
+        rag_tools = create_rag_tools(vector_db)
+        tools.extend(rag_tools)
+    except Exception:
+        pass
+    return tools
+
 __all__ = [
     "all_tools",
+    "get_all_tools",
     "ORDER_TOOLS",
     "LOGISTICS_TOOLS",
     "PAYMENT_TOOLS",
