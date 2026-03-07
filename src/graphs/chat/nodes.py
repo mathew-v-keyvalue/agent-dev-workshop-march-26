@@ -15,6 +15,7 @@ from src.graphs.chat.prompts import (
 from src.graphs.chat.states import AgentState, Intent
 from src.llm.openai import OpenAILLM
 from src.tools import order_management_tools, product_discovery_tools
+from src.tools.mcp import get_mcp_tools
 from src.tools.rag import create_rag_tools
 from src.tools.search import get_web_search_tools
 from src.vector_db.weaviate import WeaviateVectorDB
@@ -32,6 +33,7 @@ def _build_order_management_tools():
         tools.extend(create_rag_tools(vector_db=db, embedding=embedding))
     except Exception:
         pass
+    tools.extend(get_mcp_tools())
     return tools
 
 
