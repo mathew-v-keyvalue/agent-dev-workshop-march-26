@@ -5,8 +5,9 @@ from src.agents.chat import ChatAgent
 st.set_page_config(page_title="Chat Agent", page_icon="💬")
 st.title("💬 Chat Agent")
 
-@st.cache_resource
 def get_agent():
+    """Create a fresh agent each time so code changes in src/agents/chat.py are picked up
+    after a full app restart (Streamlit rerun does not re-import Python modules)."""
     return ChatAgent()
 
 if "messages" not in st.session_state:
