@@ -12,8 +12,9 @@ st.title("💬 KVKart Chat")
 DOMAIN_NODES = {"order_management", "product_discovery", "general_assistant"}
 
 
-@st.cache_resource
 def get_agent():
+    """Create a fresh agent each time so code changes in src/agents/chat.py are picked up
+    after a full app restart (Streamlit rerun does not re-import Python modules)."""
     return ChatAgent()
 
 
