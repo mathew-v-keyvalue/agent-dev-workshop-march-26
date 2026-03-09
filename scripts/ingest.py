@@ -1,166 +1,184 @@
 """
-Ingest documents from the data/ folder into Weaviate for RAG.
+Ingest policy documents (and related internal docs) for the RAG knowledge base.
 
-Reads .txt and .md files, chunks by character length with overlap,
-embeds with OpenAI, and adds to the Documents collection.
-
-Run from repo root:
-  uv run python -m scripts.ingest
-  # or with options:
-  uv run python -m scripts.ingest --data-dir data --chunk-size 1000 --overlap 200
+Loads .txt, .md, .pdf from data/, chunks them, embeds via OpenAIEmbedding,
+and stores in Weaviate. Runs automatically when you docker compose up.
 """
-
-from __future__ import annotations
 
 import argparse
 import sys
+import uuid
 from pathlib import Path
 
-# Project root (parent of scripts/)
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+import pypdf
 
 from src.config import settings
-from src.embedding import OpenAIEmbedding
-from src.vector_db import WeaviateVectorDB
+from src.embedding.openai import OpenAIEmbedding
+from src.vector_db.weaviate import WeaviateVectorDB
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
 
-SUPPORTED_EXTENSIONS = {".txt", ".md"}
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_OVERLAP = 200
+def load_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
-def chunk_by_characters(
+def load_pdf_file(path: Path) -> str:
+    try:
+        reader = pypdf.PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except ImportError:
+        print(
+            f"  [warn] pypdf not installed — skipping {path.name}. "
+            "Install with: uv add pypdf"
+        )
+        return ""
+
+
+def load_document(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        return load_pdf_file(path)
+    return load_text_file(path)
+
+
+def chunk_text(
     text: str,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    overlap: int = DEFAULT_OVERLAP,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 100,
 ) -> list[str]:
-    """
-    Split text into chunks by character length with overlap.
+    """Split text into overlapping chunks by character count."""
+    if not text.strip():
+        return []
 
-    Each chunk has length at most chunk_size. Consecutive chunks overlap
-    by `overlap` characters (step = chunk_size - overlap).
-
-    Args:
-        text: Full document text.
-        chunk_size: Maximum characters per chunk.
-        overlap: Number of characters to overlap between consecutive chunks.
-
-    Returns:
-        List of chunk strings.
-    """
-    if overlap >= chunk_size:
-        overlap = max(0, chunk_size - 1)
-    step = chunk_size - overlap
     chunks = []
     start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        chunk = text[start:end]
-        if chunk.strip():
+    text_len = len(text)
+
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
+        chunk = text[start:end].strip()
+        if chunk:
             chunks.append(chunk)
-        start += step
-        if end >= len(text):
+        if end == text_len:
             break
+        start += chunk_size - chunk_overlap
+
     return chunks
 
 
-def load_documents(data_dir: Path) -> list[tuple[str, str]]:
-    """
-    Load all supported files from data_dir.
-
-    Returns:
-        List of (content, source_path) tuples. source_path is the file path
-        as string for metadata (e.g. "data/shipping_and_delivery.md").
-    """
-    data_dir = data_dir.resolve()
-    if not data_dir.is_dir():
-        return []
-    out = []
+def collect_documents(data_dir: Path) -> list[tuple[Path, str]]:
+    """Return list of (path, text) for all supported files in data_dir."""
+    docs = []
     for path in sorted(data_dir.iterdir()):
-        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            continue
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except Exception as e:
-            print(f"  Warning: could not read {path}: {e}", file=sys.stderr)
-            continue
-        # Use path relative to repo root for source
-        try:
-            rel = path.relative_to(_REPO_ROOT)
-        except ValueError:
-            rel = path
-        source = str(rel).replace("\\", "/")
-        out.append((content, source))
-    return out
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            print(f"  Loading: {path.name}")
+            text = load_document(path)
+            if text.strip():
+                docs.append((path, text))
+            else:
+                print(f"  [warn] {path.name} is empty or unreadable — skipping.")
+    return docs
 
 
-def main() -> int:
+def ingest(
+    collection_name: str = "Documents",
+    chunk_size: int = 1000,
+    chunk_overlap: int = 100,
+) -> None:
+    if not DATA_DIR.exists():
+        print(f"Data directory not found: {DATA_DIR}")
+        sys.exit(1)
+
+    print("\n=== Document Ingestion ===")
+    print(f"Data dir   : {DATA_DIR}")
+    print(f"Weaviate   : {settings.WEAVIATE_URL}")
+    print(f"Collection : {collection_name}")
+    print(f"Chunk size : {chunk_size} chars  |  Overlap: {chunk_overlap} chars")
+    print()
+
+    print("Step 1/4 — Collecting documents...")
+    raw_docs = collect_documents(DATA_DIR)
+    if not raw_docs:
+        print("No supported documents found in data/. Add .txt, .md, or .pdf files.")
+        sys.exit(0)
+    print(f"  Found {len(raw_docs)} document(s).")
+
+    print("\nStep 2/4 — Chunking documents...")
+    all_chunks: list[str] = []
+    all_metadatas: list[dict] = []
+    all_ids: list[str] = []
+
+    for path, text in raw_docs:
+        chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        print(f"  {path.name}: {len(chunks)} chunk(s)")
+        for i, chunk in enumerate(chunks):
+            all_chunks.append(chunk)
+            all_metadatas.append(
+                {
+                    "source": path.name,
+                    "chunk_index": i,
+                }
+            )
+            all_ids.append(str(uuid.uuid4()))
+
+    print(f"  Total chunks: {len(all_chunks)}")
+
+    print("\nStep 3/4 — Embedding chunks via OpenAI...")
+    embedder = OpenAIEmbedding(
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.LITELLM_URL,
+    )
+    vectors = embedder.embed_documents(all_chunks)
+    print(f"  Embedded {len(vectors)} chunk(s), dimension={len(vectors[0])}.")
+
+    print("\nStep 4/4 — Ingesting into Weaviate...")
+    db = WeaviateVectorDB(url=settings.WEAVIATE_URL, collection_name=collection_name)
+
+    added_ids = db.add_documents(
+        documents=all_chunks,
+        metadatas=all_metadatas,
+        ids=all_ids,
+        vectors=vectors,
+    )
+
+    db.close()
+
+    print(f"  Ingested {len(added_ids)} chunk(s) into collection '{collection_name}'.")
+    print("\nDone!")
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ingest documents from data/ into Weaviate (character chunking + overlap)."
+        description="Ingest documents into Weaviate for RAG."
     )
     parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=_REPO_ROOT / "data",
-        help="Directory containing .txt and .md files (default: data)",
+        "--collection",
+        default="Documents",
+        help="Weaviate collection name (default: Documents)",
     )
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=DEFAULT_CHUNK_SIZE,
-        help=f"Character length per chunk (default: {DEFAULT_CHUNK_SIZE})",
+        default=500,
+        help="Chunk size in characters (default: 1000)",
     )
     parser.add_argument(
-        "--overlap",
+        "--chunk-overlap",
         type=int,
-        default=DEFAULT_OVERLAP,
-        help=f"Overlap in characters between consecutive chunks (default: {DEFAULT_OVERLAP})",
-    )
-    parser.add_argument(
-        "--recreate",
-        action="store_true",
-        help="Delete and recreate the Documents collection before ingesting",
+        default=50,
+        help="Overlap between chunks in characters (default: 100)",
     )
     args = parser.parse_args()
 
-    data_dir = args.data_dir if args.data_dir.is_absolute() else _REPO_ROOT / args.data_dir
-    docs = load_documents(data_dir)
-    if not docs:
-        print("No documents found in", data_dir, file=sys.stderr)
-        return 1
-
-    # Chunk all documents
-    all_chunks = []
-    all_metadatas = []
-    for content, source in docs:
-        chunks = chunk_by_characters(content, args.chunk_size, args.overlap)
-        for chunk in chunks:
-            all_chunks.append(chunk)
-            all_metadatas.append({"source": source})
-
-    print(f"Loaded {len(docs)} file(s), {len(all_chunks)} chunk(s).")
-
-    embedding = OpenAIEmbedding()
-    db = WeaviateVectorDB(
-        url=settings.WEAVIATE_URL,
-        grpc_port=settings.WEAVIATE_GRPC_PORT,
-        embedding=embedding,
+    ingest(
+        collection_name=args.collection,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
     )
-
-    try:
-        if args.recreate:
-            db.delete_collection("Documents")
-            print("Recreated Documents collection.")
-        db.create_collection("Documents")
-        ids = db.add_documents(all_chunks, metadatas=all_metadatas)
-        print(f"Ingested {len(ids)} chunk(s) into Weaviate.")
-    finally:
-        db.close()
-
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

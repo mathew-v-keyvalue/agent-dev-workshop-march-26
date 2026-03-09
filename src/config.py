@@ -21,6 +21,14 @@ class Settings(BaseSettings):
 
     LITELLM_URL: str | None = Field(default=None)
 
+    WEAVIATE_URL: str = Field(default="http://localhost:8090")
+
+    TAVILY_API_KEY: str = Field(...)
+
+    MCP_URL: str = Field(default="http://localhost:8000/sse")
+    MCP_HOST: str = Field(default="0.0.0.0")
+    MCP_PORT: int = Field(default=8000)
+
     MYSQL_HOST: str = Field(default="localhost")
     MYSQL_PORT: int = Field(default=3306)
     MYSQL_USER: str = Field(default="diya")

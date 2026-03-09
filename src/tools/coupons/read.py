@@ -1,4 +1,4 @@
-"""Read-only coupon tools. All queries use parameterized SQL via src.db.execute_query."""
+from datetime import datetime, timezone
 
 from langchain_core.tools import tool
 
@@ -6,97 +6,201 @@ from src.db import execute_query
 
 
 @tool
-def validate_coupon(
-    coupon_code: str,
-    user_id: int | None = None,
-    order_amount: float | None = None,
-) -> dict:
-    """Validate a coupon: active, not expired, within usage limits (total and per-user).
+def validate_coupon(code: str, user_id: int, order_amount: float) -> dict:
+    """Validate whether a coupon code can be applied to an order.
 
-    Optionally check min_order_amount and user-specific usage limit.
-    Returns coupon details if valid, or error message.
+    Performs comprehensive checks:
+    - Coupon exists and is active.
+    - Current date is within the valid_from / valid_until window.
+    - Order amount meets the minimum order requirement.
+    - Total usage limit has not been exceeded.
+    - Per-user usage limit has not been exceeded.
+    - User type eligibility (all / new / premium).
+
+    If valid, returns the calculated discount amount.
 
     Args:
-        coupon_code: The coupon code (e.g. 'SAVE10').
-        user_id: Optional user ID to check per-user usage limit.
-        order_amount: Optional order subtotal to check min_order_amount.
+        code: The coupon code to validate.
+        user_id: The customer's user ID.
+        order_amount: The cart/order subtotal before discount.
     """
-    code = (coupon_code or "").strip()
-    if not code:
-        return {"error": "Coupon code is required."}
-    rows = execute_query(
-        """SELECT coupon_id, code, description, discount_type, discount_value,
-                  min_order_amount, max_discount_amount, usage_limit_total, usage_limit_per_user,
-                  times_used, valid_from, valid_until, is_active
-           FROM coupons WHERE code = %s""",
-        (code,),
+    # Fetch coupon
+    coupon_rows = execute_query(
+        "SELECT * FROM coupons WHERE code = %s",
+        (code.upper(),),
     )
-    if not rows:
-        return {"error": f"Coupon '{code}' not found."}
-    c = rows[0]
-    if not c.get("is_active"):
-        return {"error": "Coupon is not active."}
-    # Use raw comparison; caller can pass datetime if needed - we use NOW() in SQL for consistency
-    check = execute_query(
-        """SELECT 1 FROM coupons WHERE coupon_id = %s AND is_active = 1
-           AND valid_from <= NOW() AND valid_until >= NOW()""",
-        (c["coupon_id"],),
-    )
-    if not check:
-        return {"error": "Coupon is expired or not yet valid."}
-    if c.get("usage_limit_total") is not None and (c.get("times_used") or 0) >= c["usage_limit_total"]:
-        return {"error": "Coupon has reached its total usage limit."}
-    if user_id is not None and c.get("usage_limit_per_user"):
-        used_by_user = execute_query(
+    if not coupon_rows:
+        return {"valid": False, "error": f"Coupon code '{code}' not found."}
+
+    coupon = coupon_rows[0]
+
+    # Check active
+    if not coupon["is_active"]:
+        return {"valid": False, "error": "This coupon is no longer active."}
+
+    # Check date validity
+    now = datetime.now(timezone.utc)
+    valid_from = coupon["valid_from"]
+    valid_until = coupon["valid_until"]
+    if isinstance(valid_from, str):
+        valid_from = datetime.fromisoformat(valid_from)
+    if isinstance(valid_until, str):
+        valid_until = datetime.fromisoformat(valid_until)
+
+    # Make naive datetimes UTC-aware for comparison
+    if valid_from.tzinfo is None:
+        valid_from = valid_from.replace(tzinfo=timezone.utc)
+    if valid_until.tzinfo is None:
+        valid_until = valid_until.replace(tzinfo=timezone.utc)
+
+    if now < valid_from:
+        return {"valid": False, "error": "This coupon is not yet active."}
+    if now > valid_until:
+        return {"valid": False, "error": "This coupon has expired."}
+
+    # Check minimum order amount
+    min_amount = float(coupon.get("min_order_amount") or 0)
+    if order_amount < min_amount:
+        return {
+            "valid": False,
+            "error": f"Minimum order amount is ₹{min_amount:.2f}. "
+            f"Your order is ₹{order_amount:.2f}.",
+        }
+
+    # Check total usage limit
+    if coupon["usage_limit_total"] is not None:
+        if coupon["times_used"] >= coupon["usage_limit_total"]:
+            return {
+                "valid": False,
+                "error": "This coupon has reached its maximum usage limit.",
+            }
+
+    # Check per-user usage limit
+    if coupon["usage_limit_per_user"] is not None:
+        user_usage = execute_query(
             "SELECT COUNT(*) AS cnt FROM coupon_usage WHERE coupon_id = %s AND user_id = %s",
-            (c["coupon_id"], user_id),
+            (coupon["coupon_id"], user_id),
         )
-        if used_by_user and (used_by_user[0].get("cnt") or 0) >= c["usage_limit_per_user"]:
-            return {"error": "You have already used this coupon the maximum times allowed."}
-    if order_amount is not None and c.get("min_order_amount") is not None:
-        if float(order_amount) < float(c["min_order_amount"]):
-            return {"error": f"Minimum order amount for this coupon is {c['min_order_amount']}."}
+        if user_usage[0]["cnt"] >= coupon["usage_limit_per_user"]:
+            return {
+                "valid": False,
+                "error": "You have already used this coupon the maximum number of times.",
+            }
+
+    # Check user type eligibility
+    applicable_type = coupon.get("applicable_user_type", "all")
+    if applicable_type != "all":
+        user_rows = execute_query(
+            "SELECT is_premium_member, created_at FROM users WHERE user_id = %s",
+            (user_id,),
+        )
+        if not user_rows:
+            return {"valid": False, "error": "User not found."}
+
+        user = user_rows[0]
+        if applicable_type == "premium" and not user["is_premium_member"]:
+            return {
+                "valid": False,
+                "error": "This coupon is only available to premium members.",
+            }
+        if applicable_type == "new":
+            # Consider users created within the last 30 days as "new"
+            created = user["created_at"]
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            days_since = (now - created).days
+            if days_since > 30:
+                return {
+                    "valid": False,
+                    "error": "This coupon is only for new customers (within 30 days of signup).",
+                }
+
+    # Calculate discount
+    if coupon["discount_type"] == "percentage":
+        discount = order_amount * float(coupon["discount_value"]) / 100.0
+        max_disc = (
+            float(coupon["max_discount_amount"])
+            if coupon.get("max_discount_amount")
+            else None
+        )
+        if max_disc and discount > max_disc:
+            discount = max_disc
+    else:  # flat
+        discount = float(coupon["discount_value"])
+        if discount > order_amount:
+            discount = order_amount
+
     return {
         "valid": True,
-        "coupon_id": c["coupon_id"],
-        "code": c["code"],
-        "description": c["description"],
-        "discount_type": c["discount_type"],
-        "discount_value": c["discount_value"],
-        "min_order_amount": c.get("min_order_amount"),
-        "max_discount_amount": c.get("max_discount_amount"),
+        "coupon_code": coupon["code"],
+        "discount_type": coupon["discount_type"],
+        "discount_value": float(coupon["discount_value"]),
+        "calculated_discount": round(discount, 2),
+        "final_amount": round(order_amount - discount, 2),
+        "message": f"Coupon '{coupon['code']}' applied! You save ₹{discount:.2f}.",
     }
 
 
 @tool
 def get_available_coupons(user_id: int | None = None) -> list:
-    """List coupons that are currently available (active, within validity, within total usage limit).
+    """List all currently valid and active coupons.
 
-    Does not check per-user usage; use validate_coupon for that.
+    Returns coupon code, description, discount details, and eligibility info.
+    If user_id is provided, filters out coupons the user is not eligible for
+    (based on user type).
 
     Args:
-        user_id: Optional; if provided, only returns coupons the user can still use (per-user limit).
+        user_id: Optional customer user ID to filter by eligibility.
     """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
     rows = execute_query(
-        """SELECT coupon_id, code, description, discount_type, discount_value,
-                  min_order_amount, max_discount_amount, valid_from, valid_until,
-                  usage_limit_total, usage_limit_per_user, times_used
-           FROM coupons
-           WHERE is_active = 1
-             AND valid_from <= NOW() AND valid_until >= NOW()
-             AND (usage_limit_total IS NULL OR times_used < usage_limit_total)
-           ORDER BY valid_until ASC"""
+        """
+        SELECT coupon_id, code, description, discount_type, discount_value,
+               min_order_amount, max_discount_amount, applicable_user_type,
+               applicable_categories, valid_from, valid_until,
+               usage_limit_total, times_used
+        FROM coupons
+        WHERE is_active = 1
+          AND valid_from <= %s
+          AND valid_until >= %s
+          AND (usage_limit_total IS NULL OR times_used < usage_limit_total)
+        ORDER BY discount_value DESC
+        """,
+        (now, now),
     )
-    if not user_id:
-        return rows
-    result = []
-    for c in rows:
-        if c.get("usage_limit_per_user"):
-            used = execute_query(
-                "SELECT COUNT(*) AS cnt FROM coupon_usage WHERE coupon_id = %s AND user_id = %s",
-                (c["coupon_id"], user_id),
-            )
-            if used and (used[0].get("cnt") or 0) >= c["usage_limit_per_user"]:
-                continue
-        result.append(c)
-    return result
+
+    if not rows:
+        return {"message": "No coupons are currently available."}
+
+    # If user_id provided, filter by user type eligibility
+    if user_id is not None:
+        user_rows = execute_query(
+            "SELECT is_premium_member, created_at FROM users WHERE user_id = %s",
+            (user_id,),
+        )
+        if user_rows:
+            user = user_rows[0]
+            is_premium = user["is_premium_member"]
+            created = user["created_at"]
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            now_dt = datetime.now(timezone.utc)
+            is_new = (now_dt - created).days <= 30
+
+            filtered = []
+            for c in rows:
+                atype = c.get("applicable_user_type", "all")
+                if atype == "all":
+                    filtered.append(c)
+                elif atype == "premium" and is_premium:
+                    filtered.append(c)
+                elif atype == "new" and is_new:
+                    filtered.append(c)
+            rows = filtered
+
+    return rows

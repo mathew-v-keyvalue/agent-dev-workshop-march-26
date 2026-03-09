@@ -1,65 +1,109 @@
-"""RAG tools: semantic search, hybrid search, and get document by ID over the vector DB."""
-
 from typing import Any
 
 from langchain_core.tools import tool
 
+from src.embedding.base import EmbeddingBase
+from src.vector_db.base import VectorDBBase
 
-def create_rag_tools(vector_db: Any) -> list:
+
+def create_rag_tools(
+    vector_db: VectorDBBase,
+    embedding: EmbeddingBase,
+) -> list:
     """
-    Create LangChain tools for RAG using the given vector database.
+    Factory that returns RAG tools for searching ingested policy documents
+    (and related internal docs). Use with the ingest script: put policy
+    PDFs/text in data/, run scripts/ingest.py, then the agent can search them.
 
-    The vector_db must support semantic_search, hybrid_search, and get_documents
-    (e.g. WeaviateVectorDB with an embedding instance).
+    Args:
+        vector_db: Any VectorDBBase implementation (e.g. WeaviateVectorDB).
+        embedding: Any EmbeddingBase implementation (e.g. OpenAIEmbedding).
 
     Returns:
-        List of tools: semantic_search, hybrid_search, get_document_by_id.
+        A list of LangChain @tool functions ready to bind to an LLM agent.
     """
-    db = vector_db
 
     @tool
     def semantic_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        """Search the policy and help documents by meaning (semantic/vector search).
+        """Search the ingested-document knowledge base (files from data/) using semantic similarity.
 
-        Use this for questions about shipping, delivery, returns, cancellation policy,
-        refunds, or other company policies. Pass the customer's question or keywords.
-        Returns relevant document chunks with content and metadata (e.g. source file).
+        Use for natural-language search over uploaded docs (e.g. policy text, FAQs).
 
         Args:
-            query: Natural language question or search phrase (e.g. 'What is the return window?').
+            query: Natural-language search query.
             top_k: Maximum number of results to return (default 5).
         """
-        return db.semantic_search(query, top_k=top_k)
+        query_vector = embedding.embed_query(query)
+        results = vector_db.semantic_search(
+            query=query,
+            top_k=top_k,
+            query_vector=query_vector,
+        )
+        return results
 
     @tool
     def hybrid_search(
-        query: str, top_k: int = 5, alpha: float = 0.5
+        query: str,
+        top_k: int = 5,
+        alpha: float = 0.5,
     ) -> list[dict[str, Any]]:
-        """Search policy and help documents with both keyword and semantic relevance (hybrid).
+        """Search the ingested-document knowledge base (files from data/) with semantic + keyword.
 
-        Use for policy questions when you want both exact keyword match and meaning.
-        alpha=1.0 is purely semantic, alpha=0.0 is purely keyword; 0.5 balances both.
+        Use for natural-language search over uploaded docs when the query has specific terms.
 
         Args:
-            query: Search question or phrase.
+            query: Natural-language search query.
             top_k: Maximum number of results (default 5).
-            alpha: Weight of semantic vs keyword (default 0.5).
+            alpha: Balance semantic (1.0) vs keyword (0.0); default 0.5.
         """
-        return db.hybrid_search(query, top_k=top_k, alpha=alpha)
+        query_vector = embedding.embed_query(query)
+        results = vector_db.hybrid_search(
+            query=query,
+            top_k=top_k,
+            alpha=alpha,
+            query_vector=query_vector,
+        )
+        return results
 
     @tool
-    def get_document_by_id(doc_id: str) -> dict[str, Any]:
-        """Fetch a single document chunk by its ID (e.g. from a prior search result).
+    def filtered_search(
+        query: str,
+        metadata_filter: dict[str, Any],
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search the ingested-document knowledge base (files from data/) with metadata filters.
 
-        Use when you need the full content of a specific chunk returned by semantic_search
-        or hybrid_search.
+        Use when scoping by source or other metadata on ingested documents.
 
         Args:
-            doc_id: The document chunk ID (UUID string).
+            query: Natural-language search query.
+            metadata_filter: Metadata filter (e.g. {"source": "return_policy.pdf"}).
+            top_k: Maximum number of results (default 5).
         """
-        docs = db.get_documents(ids=[doc_id])
-        if not docs:
-            return {"error": f"No document found with id '{doc_id}'."}
-        return docs[0]
+        query_vector = embedding.embed_query(query)
+        results = vector_db.semantic_search(
+            query=query,
+            top_k=top_k,
+            metadata_filter=metadata_filter,
+            query_vector=query_vector,
+        )
+        return results
 
-    return [semantic_search, hybrid_search, get_document_by_id]
+    @tool
+    def get_document_by_id(document_id: str) -> dict[str, Any]:
+        """Retrieve a policy document by ID (e.g. from a previous search).
+
+        Args:
+            document_id: The document/chunk ID returned by a search.
+        """
+        results = vector_db.get_documents(ids=[document_id])
+        if not results:
+            return {"error": f"No document found with id '{document_id}'."}
+        return results[0]
+
+    return [
+        semantic_search,
+        hybrid_search,
+        filtered_search,
+        get_document_by_id,
+    ]

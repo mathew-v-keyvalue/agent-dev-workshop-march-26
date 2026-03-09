@@ -6,23 +6,37 @@ from src.embedding.base import EmbeddingBase
 
 class OpenAIEmbedding(EmbeddingBase):
     """
-    OpenAI embedding implementation using langchain_openai.
+    OpenAI implementation of EmbeddingBase using langchain_openai.
 
-    Uses LITELLM_URL when set (e.g. for LiteLLM proxy), otherwise the default
-    OpenAI API. Example: OpenAIEmbedding() for defaults, or
-    OpenAIEmbedding(model="text-embedding-3-large") for a specific model.
+    Example:
+        embedding = OpenAIEmbedding()
+        vectors = embedding.embed_documents(["Hello world", "Foo bar"])
+        query_vec = embedding.embed_query("Hello")
+
+        # Custom model
+        embedding = OpenAIEmbedding(model="text-embedding-3-large")
     """
 
     def __init__(
         self,
         model: str | None = None,
         api_key: str | None = None,
+        base_url: str | None = None,
         **kwargs,
     ):
+        """
+        Initialize the OpenAI embedding model.
+
+        Args:
+            model: Model name (defaults to settings.OPENAI_EMBEDDING_MODEL)
+            api_key: OpenAI API key (defaults to settings.OPENAI_API_KEY)
+            base_url: API base URL (defaults to settings.LITELLM_URL so embeddings use the same proxy as chat)
+            **kwargs: Additional parameters passed to OpenAIEmbeddings
+        """
         self._model = OpenAIEmbeddings(
             model=model or settings.OPENAI_EMBEDDING_MODEL,
             api_key=api_key or settings.OPENAI_API_KEY or None,
-            base_url=settings.LITELLM_URL,
+            openai_api_base=base_url or settings.LITELLM_URL,
             **kwargs,
         )
 

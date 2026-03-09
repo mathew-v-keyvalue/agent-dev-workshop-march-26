@@ -1,4 +1,4 @@
 from src.vector_db.base import VectorDBBase
-from src.vector_db.weaviate_db import WeaviateVectorDB
+from src.vector_db.weaviate import WeaviateVectorDB
 
 __all__ = ["VectorDBBase", "WeaviateVectorDB"]

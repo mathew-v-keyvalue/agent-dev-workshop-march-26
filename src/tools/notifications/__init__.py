@@ -1,5 +1,7 @@
-from src.tools.notifications.read import get_user_notifications
-from src.tools.notifications.write import mark_notification_read
+from src.tools.notifications.read import (
+    get_user_notifications,
+    mark_notification_read,
+)
 
 __all__ = [
     "get_user_notifications",

@@ -1,4 +1,3 @@
-"""Read-only order tools. All queries use parameterized SQL via src.db.execute_query."""
 
 from langchain_core.tools import tool
 
@@ -26,12 +25,12 @@ def get_order_by_order_number(order_number: str) -> dict:
 
 @tool
 def get_order_by_id(order_id: int) -> dict:
-    """Retrieve a single order by its internal order_id.
+    """Retrieve a single order by its internal order ID.
 
-    Use when you have the numeric order ID (e.g. from another query).
+    Use this when you already have the numeric order_id from another query.
 
     Args:
-        order_id: The internal primary key of the order.
+        order_id: The internal numeric order identifier.
     """
     rows = execute_query(
         "SELECT * FROM orders WHERE order_id = %s",
@@ -43,83 +42,148 @@ def get_order_by_id(order_id: int) -> dict:
 
 
 @tool
-def get_orders_by_user(user_id: int, limit: int = 20) -> list:
-    """List orders for a user, most recent first.
+def get_orders_by_user(user_id: int, status_filter: str | None = None) -> list:
+    """Get all orders placed by a specific user, newest first.
 
-    Returns up to 20 orders by default. Use for order history or "my orders" queries.
+    Optionally filter by order status (e.g. 'delivered', 'shipped', 'cancelled').
+    Returns a list of order summaries. Limited to last 50 orders.
 
     Args:
-        user_id: The user's ID.
-        limit: Maximum number of orders to return (default 20).
+        user_id: The customer's user ID.
+        status_filter: Optional order status to filter by
+            (pending, confirmed, processing, shipped, out_for_delivery,
+             delivered, cancelled, return_requested, returned, failed).
     """
-    rows = execute_query(
-        "SELECT * FROM orders WHERE user_id = %s ORDER BY placed_at DESC LIMIT %s",
-        (user_id, limit),
-    )
+    if status_filter:
+        valid_statuses = {
+            "pending", "confirmed", "processing", "shipped",
+            "out_for_delivery", "delivered", "cancelled",
+            "return_requested", "returned", "failed",
+        }
+        if status_filter not in valid_statuses:
+            return {"error": f"Invalid status '{status_filter}'. Valid: {sorted(valid_statuses)}"}
+        rows = execute_query(
+            "SELECT * FROM orders WHERE user_id = %s AND order_status = %s "
+            "ORDER BY placed_at DESC LIMIT 50",
+            (user_id, status_filter),
+        )
+    else:
+        rows = execute_query(
+            "SELECT * FROM orders WHERE user_id = %s "
+            "ORDER BY placed_at DESC LIMIT 50",
+            (user_id,),
+        )
+    if not rows:
+        return {"message": "No orders found for this user."}
     return rows
 
 
 @tool
 def get_order_items(order_id: int) -> list:
-    """Get all line items for an order.
+    """Get all line items for a given order, including product names and prices.
 
-    Returns product_id, quantity, unit_price, total_price, item_status per line.
+    Joins with the products table to include product name and current details
+    alongside the ordered quantity and price at time of purchase.
 
     Args:
-        order_id: The internal order ID.
+        order_id: The internal numeric order identifier.
     """
     rows = execute_query(
-        """SELECT oi.*, p.name AS product_name
-           FROM order_items oi
-           JOIN products p ON oi.product_id = p.product_id
-           WHERE oi.order_id = %s ORDER BY oi.order_item_id""",
+        """
+        SELECT oi.order_item_id, oi.order_id, oi.product_id, oi.quantity,
+               oi.unit_price, oi.total_price, oi.item_status,
+               p.name AS product_name, p.selling_price AS current_price,
+               p.is_active AS product_active
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.product_id
+        WHERE oi.order_id = %s
+        """,
         (order_id,),
     )
+    if not rows:
+        return {"message": f"No items found for order_id {order_id}."}
     return rows
 
 
 @tool
-def get_order_details_full(order_id: int) -> dict:
-    """Get full order details with all items (joined). Single order by order_id.
+def get_order_details_full(order_number: str) -> dict:
+    """Get a comprehensive order summary: order info, line items, payment, and shipment.
 
-    Use when you need one order with its line items in one call.
+    This is the most complete view of an order — use it when a customer asks
+    'What is the status of my order?' or needs a full breakdown.
 
     Args:
-        order_id: The internal order ID.
+        order_number: The customer-facing order number string.
     """
-    orders = execute_query(
-        "SELECT * FROM orders WHERE order_id = %s",
+    # Fetch order
+    order_rows = execute_query(
+        "SELECT * FROM orders WHERE order_number = %s",
+        (order_number,),
+    )
+    if not order_rows:
+        return {"error": f"No order found with order number '{order_number}'."}
+
+    order = order_rows[0]
+    order_id = order["order_id"]
+
+    # Fetch items
+    items = execute_query(
+        """
+        SELECT oi.order_item_id, oi.product_id, oi.quantity,
+               oi.unit_price, oi.total_price, oi.item_status,
+               p.name AS product_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.product_id
+        WHERE oi.order_id = %s
+        """,
         (order_id,),
     )
-    if not orders:
-        return {"error": f"No order found with order_id {order_id}."}
-    order = orders[0]
-    order["items"] = execute_query(
-        """SELECT oi.*, p.name AS product_name
-           FROM order_items oi
-           JOIN products p ON oi.product_id = p.product_id
-           WHERE oi.order_id = %s ORDER BY oi.order_item_id""",
+
+    # Fetch payment
+    payments = execute_query(
+        "SELECT * FROM payments WHERE order_id = %s",
         (order_id,),
     )
-    return order
+
+    # Fetch shipment
+    shipments = execute_query(
+        """
+        SELECT s.*, lp.name AS logistics_partner_name
+        FROM shipments s
+        JOIN logistics_partners lp ON s.logistics_partner_id = lp.partner_id
+        WHERE s.order_id = %s
+        """,
+        (order_id,),
+    )
+
+    return {
+        "order": order,
+        "items": items,
+        "payment": payments[0] if payments else None,
+        "shipment": shipments[0] if shipments else None,
+    }
 
 
 @tool
 def get_bulk_orders_by_ids(order_ids: list[int]) -> list:
-    """Get multiple orders by a list of order IDs.
+    """Retrieve multiple orders at once by their internal order IDs.
 
-    Returns orders in the same order as the input list where found.
-    Use when you have several order_ids (e.g. from search or user list).
+    Useful when you need details for several orders in a single call
+    (e.g. comparing orders or building a summary).
+    Limited to 20 order IDs per call.
 
     Args:
-        order_ids: List of internal order IDs.
+        order_ids: A list of numeric order IDs (max 20).
     """
     if not order_ids:
-        return []
+        return {"error": "order_ids list cannot be empty."}
+    if len(order_ids) > 20:
+        return {"error": "Cannot fetch more than 20 orders at once."}
+
     placeholders = ",".join(["%s"] * len(order_ids))
     rows = execute_query(
-        f"SELECT * FROM orders WHERE order_id IN ({placeholders})",
+        f"SELECT * FROM orders WHERE order_id IN ({placeholders}) "
+        f"ORDER BY placed_at DESC",
         tuple(order_ids),
     )
-    order_by_id = {r["order_id"]: r for r in rows}
-    return [order_by_id[oid] for oid in order_ids if oid in order_by_id]
+    return rows

@@ -1,55 +1,79 @@
-"""Read-only payment tools. All queries use parameterized SQL via src.db.execute_query."""
-
 from langchain_core.tools import tool
 
 from src.db import execute_query
 
 
 @tool
-def get_payment_by_order(order_id: int) -> dict | list:
-    """Get payment(s) for an order. Most orders have one payment record.
+def get_payment_by_order(order_id: int) -> dict:
+    """Get payment details for a specific order.
 
-    Returns payment_method, amount, currency, payment_status, transaction_id, paid_at.
+    Returns payment method, gateway, transaction ID, amount, status,
+    and timestamps. Useful when a customer asks about payment confirmation.
 
     Args:
         order_id: The internal order ID.
     """
     rows = execute_query(
-        "SELECT * FROM payments WHERE order_id = %s ORDER BY payment_id",
+        "SELECT * FROM payments WHERE order_id = %s",
         (order_id,),
     )
     if not rows:
-        return {"error": f"No payment found for order_id {order_id}."}
-    return rows[0] if len(rows) == 1 else rows
+        return {"message": f"No payment record found for order_id {order_id}."}
+    return rows[0]
 
 
 @tool
-def get_payments_by_user(user_id: int, limit: int = 50) -> list:
-    """List payments for a user, most recent first.
+def get_payments_by_user(user_id: int) -> list:
+    """Get all payment records for a user, most recent first.
+
+    Returns a list of payment summaries including order ID, method, amount,
+    and status. Limited to last 50 payments.
 
     Args:
-        user_id: The user's ID.
-        limit: Maximum number of payments to return (default 50).
+        user_id: The customer's user ID.
     """
     rows = execute_query(
-        "SELECT * FROM payments WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
-        (user_id, limit),
+        """
+        SELECT p.payment_id, p.order_id, p.payment_method, p.payment_gateway,
+               p.amount, p.currency, p.payment_status, p.paid_at, p.created_at,
+               o.order_number
+        FROM payments p
+        JOIN orders o ON p.order_id = o.order_id
+        WHERE p.user_id = %s
+        ORDER BY p.created_at DESC
+        LIMIT 50
+        """,
+        (user_id,),
     )
+    if not rows:
+        return {"message": "No payment records found for this user."}
     return rows
 
 
 @tool
 def get_bulk_payments_by_orders(order_ids: list[int]) -> list:
-    """Get payments for multiple orders at once. Returns list of payments (each has order_id).
+    """Retrieve payment details for multiple orders at once.
+
+    Useful when building a summary of payments across several orders.
+    Limited to 20 order IDs per call.
 
     Args:
-        order_ids: List of order IDs.
+        order_ids: List of order IDs (max 20).
     """
     if not order_ids:
-        return []
+        return {"error": "order_ids list cannot be empty."}
+    if len(order_ids) > 20:
+        return {"error": "Cannot fetch more than 20 payment records at once."}
+
     placeholders = ",".join(["%s"] * len(order_ids))
     rows = execute_query(
-        f"SELECT * FROM payments WHERE order_id IN ({placeholders}) ORDER BY order_id, payment_id",
+        f"""
+        SELECT p.*, o.order_number
+        FROM payments p
+        JOIN orders o ON p.order_id = o.order_id
+        WHERE p.order_id IN ({placeholders})
+        ORDER BY p.created_at DESC
+        """,
         tuple(order_ids),
     )
     return rows

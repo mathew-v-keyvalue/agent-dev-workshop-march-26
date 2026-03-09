@@ -3,24 +3,53 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.graphs.chat.builder import build_graph
 from src.graphs.chat.states import AgentState
 
-
-def _messages_with_user_context(message: str, user_id: int | str, history=None) -> list:
-    """Prepend a system message with user_id so tools can use it for lookups."""
-    user_context = SystemMessage(
-        content=f"Current user_id for this session: {user_id}. Use this user_id for any user-scoped lookups (orders, cart, wallet, tickets, notifications, profile)."
-    )
-    return [user_context] + list(history or []) + [HumanMessage(content=message)]
+_USER_SYSTEM = (
+    "The customer's user_id on KV Kart is {user_id}. "
+    "Use this to look up their orders, cart, profile, etc. when needed."
+)
 
 
 class ChatAgent:
     def __init__(self):
         self.graph = build_graph()
 
-    def chat(self, message: str, thread_id: str, user_id: int | str, history=None):
-        state = AgentState(messages=_messages_with_user_context(message, user_id, history))
-        result = self.graph.invoke(state)
-        return {"messages": result["messages"]}
+    def _config(self, thread_id: str) -> dict:
+        return {"configurable": {"thread_id": thread_id}}
 
-    def stream(self, message: str, thread_id: str, user_id: int | str, history=None):
-        state = AgentState(messages=_messages_with_user_context(message, user_id, history))
-        yield from self.graph.stream(state, stream_mode=["messages", "updates"])
+    def _is_first_turn(self, thread_id: str) -> bool:
+        state = self.graph.get_state(self._config(thread_id))
+        return not state.values.get("messages")
+
+    def _build_input(self, message: str, user_id: int, thread_id: str) -> AgentState:
+        msgs = []
+        if self._is_first_turn(thread_id):
+            msgs.append(SystemMessage(content=_USER_SYSTEM.format(user_id=user_id)))
+        msgs.append(HumanMessage(content=message))
+        return AgentState(messages=msgs)
+
+    def chat(self, message: str, thread_id: str, user_id: int) -> dict:
+        return self.graph.invoke(
+            self._build_input(message, user_id, thread_id),
+            config=self._config(thread_id),
+        )
+
+    async def achat(self, message: str, thread_id: str, user_id: int) -> dict:
+        return await self.graph.ainvoke(
+            self._build_input(message, user_id, thread_id),
+            config=self._config(thread_id),
+        )
+
+    def stream(self, message: str, thread_id: str, user_id: int):
+        yield from self.graph.stream(
+            self._build_input(message, user_id, thread_id),
+            config=self._config(thread_id),
+            stream_mode=["messages", "updates"],
+        )
+
+    async def astream(self, message: str, thread_id: str, user_id: int):
+        async for chunk in self.graph.astream(
+            self._build_input(message, user_id, thread_id),
+            config=self._config(thread_id),
+            stream_mode=["messages", "updates"],
+        ):
+            yield chunk
